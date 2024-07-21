@@ -8,7 +8,6 @@ import json
 from settings import settings
 import redis
 
-# Initialize Redis
 r = redis.Redis(host='localhost', port=6379, db=0)
 
 class Scraper:
@@ -32,12 +31,25 @@ class Scraper:
     def parse_products(self, html: str) -> List[Product]:
         soup = BeautifulSoup(html, 'html.parser')
         products = []
-        for item in soup.select('.product-item'):
-            title = item.select_one('.product-title').text.strip()
-            price = float(item.select_one('.product-price').text.strip().replace('$', ''))
-            image_url = item.select_one('.product-image')['src']
+        
+        for item in soup.select('.product'):
+            title_element = item.select_one('.woo-loop-product__title a')
+            price_element = item.select_one('.price ins .woocommerce-Price-amount bdi') or item.select_one('.price .woocommerce-Price-amount bdi')
+            image_element = item.select_one('.mf-product-thumbnail img')
+
+            if not title_element or not price_element or not image_element:
+                continue
+
+            title = title_element.text.strip()
+            try:
+                price = float(price_element.text.strip().replace('₹', '').replace(',', ''))
+            except ValueError:
+                continue
+            image_url = image_element['src']
+            
             product = Product(product_title=title, product_price=price, path_to_image=image_url)
             products.append(product)
+        
         return products
 
     def scrape(self) -> List[Product]:
@@ -45,6 +57,7 @@ class Scraper:
         for page_num in range(1, self.max_pages + 1):
             html = self.fetch_page(page_num)
             products = self.parse_products(html)
+            print(f'products MayankP{page_num}', products)
             all_products.extend(products)
         return all_products
 
@@ -55,14 +68,23 @@ class Scraper:
         else:
             cached_products = []
 
+        cached_products_dict = {p['product_title']: p for p in cached_products}
+
         updated_products = []
         for product in products:
-            if not any(p['product_title'] == product.product_title and p['product_price'] == product.product_price for p in cached_products):
-                updated_products.append(product)
+            cached_product = cached_products_dict.get(product.product_title)
+            if cached_product:
+                if cached_product['product_price'] != product.product_price:
+                    updated_products.append(product.dict())
+                    cached_products_dict[product.product_title] = product.dict()
+            else:
+                updated_products.append(product.dict())
+                cached_products_dict[product.product_title] = product.dict()
 
         if updated_products:
             with open('products.json', 'w') as f:
-                json.dump([product.dict() for product in updated_products], f)
-            r.set("products", json.dumps([product.dict() for product in products]))
+                json.dump([product.dict() for product in products], f)
+            
+            r.set("products", json.dumps(list(cached_products_dict.values())))
 
         return len(updated_products)
